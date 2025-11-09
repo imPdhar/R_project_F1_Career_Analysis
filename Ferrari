@@ -1,0 +1,103 @@
+#Constructor Names
+constructors_0 <- constructors_0 %>%
+  mutate(name = str_trim(tolower(name)))
+
+#Identify Ferrari 
+ferrari_id <- constructors_0 %>%
+  filter(name == "ferrari") %>%
+  pull(constructorId)
+
+#Aggregate Season-Level Performance
+ferrari_season <- driver_season %>%
+  filter(constructorId %in% ferrari_id) %>%
+  group_by(year) %>%
+  summarise(
+    total_points_norm = sum(total_points_norm, na.rm = TRUE),
+    wins = sum(wins, na.rm = TRUE),
+    races_entered = sum(races_entered, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(year > 1990) %>%
+  arrange(year)
+  
+ferrari_season <- driver_season %>%
+  filter(constructorId %in% ferrari_id) %>%
+  group_by(year) %>%
+  summarise(
+    total_points_norm = sum(total_points_norm, na.rm = TRUE),
+    wins = sum(wins, na.rm = TRUE),
+    dnfs = sum(dnfs, na.rm = TRUE),
+    races_entered = sum(races_entered, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(dnf_rate = dnfs / races_entered) %>%
+  filter(year > 1990) %>%
+  arrange(year)
+  
+#Add Total Races
+season_lengths <- races_0 %>%
+  group_by(year) %>%
+  summarise(races_in_season = n(), .groups = "drop")
+
+ferrari_season <- ferrari_season %>%
+  left_join(season_lengths, by = "year") %>%
+  mutate(points_per_race = total_points_norm / races_in_season)
+
+#Build ARIMA Model on Points per Race
+ferrari_ts <- ts(ferrari_season$points_per_race, start = min(ferrari_season$year))
+ferrari_arima <- auto.arima(ferrari_ts)
+
+checkresiduals(ferrari_arima)
+
+#Forecast Next Season
+ferrari_forecast <- forecast(ferrari_arima, h = 1)
+print(ferrari_forecast)
+
+#Visualisation of line plot
+#Define regulation eras 
+reg_eras <- data.frame(
+  era = c("Safety/Aero Reforms", "V10/V8 Era", "Hybrid Era", "Ground Effect Era"),
+  start = c(1994, 2000, 2014, 2022),
+  end   = c(1999, 2013, 2021, 2025),
+  fill  = c("#FFD580", "#F5A09D", "#A5C8E1", "#A7E3A3")  # richer tones
+)
+
+min_year <- min(ferrari_season$year)
+max_year <- max(ferrari_forecast_df$year)
+
+reg_eras$start[1] <- min_year
+reg_eras$end[nrow(reg_eras)] <- max_year
+
+ggplot() +
+  # Regulation backgrounds
+  geom_rect(
+    data = reg_eras,
+    aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = era),
+    alpha = 0.5  # richer opacity
+  ) +
+  # Ferrari performance
+  geom_line(data = ferrari_season, aes(x = year, y = points_per_race),
+            color = "firebrick", size = 1.2) +
+  geom_point(data = ferrari_season, aes(x = year, y = points_per_race),
+             color = "firebrick", size = 2) +
+  # Forecast line & ribbon
+  geom_line(data = ferrari_forecast_df,
+            aes(x = year, y = points_per_race),
+            color = "darkred", linetype = "dotdash", size = 1) +
+  geom_ribbon(data = ferrari_forecast_df,
+              aes(x = year, ymin = lower, ymax = upper),
+              fill = "firebrick", alpha = 0.25) +
+  # Scales, labels, theme
+  scale_fill_manual(values = reg_eras$fill, name = "Regulation Era") +
+  labs(
+    title = "Ferrari Performance — Points per Race by Season",
+    subtitle = "Shaded backgrounds indicate major regulation eras",
+    x = "Year",
+    y = "Points per Race"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold")
+  )

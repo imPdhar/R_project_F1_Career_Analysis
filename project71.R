@@ -655,21 +655,32 @@ checkresiduals(ferrari_arima)
 ferrari_forecast <- forecast(ferrari_arima, h = 1)
 print(ferrari_forecast)
 
+#Create forecast dataframe 
+ferrari_forecast_df <- data.frame(
+  year = max(ferrari_season$year) + seq_len(length(ferrari_forecast$mean)),
+  points_per_race = as.numeric(ferrari_forecast$mean),
+  lower = as.numeric(ferrari_forecast$lower[, 2]),
+  upper = as.numeric(ferrari_forecast$upper[, 2])
+)
+
 #Visualisation of line plot
-#Define regulation eras 
+# Define regulation eras 
 reg_eras <- data.frame(
   era = c("Safety/Aero Reforms", "V10/V8 Era", "Hybrid Era", "Ground Effect Era"),
   start = c(1994, 2000, 2014, 2022),
   end   = c(1999, 2013, 2021, 2025),
-  fill  = c("#FFD580", "#F5A09D", "#A5C8E1", "#A7E3A3")  # richer tones
+  fill  = c("#FFD580", "#F5A09D", "#A5C8E1", "#A7E3A3")  
 )
 
+#Ensure the eras cover the full period
 min_year <- min(ferrari_season$year)
 max_year <- max(ferrari_forecast_df$year)
 
+#Extend first and last era if needed
 reg_eras$start[1] <- min_year
 reg_eras$end[nrow(reg_eras)] <- max_year
 
+#Plot
 ggplot() +
   # Regulation backgrounds
   geom_rect(
@@ -701,8 +712,9 @@ ggplot() +
   theme(
     legend.position = "right",
     panel.grid.minor = element_blank(),
-    plot.title = element_text(face = "bold")
-  )
+    plot.title = element_text(face = "bold")
+  )
+
 
 
 

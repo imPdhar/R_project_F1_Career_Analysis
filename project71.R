@@ -1,3 +1,4 @@
+#everything as far as line 1071 has no issues
 
 library(tidyverse)
 library(dplyr)
@@ -1496,5 +1497,6 @@ if (requireNamespace("ragg", quietly = TRUE)) {
 } else {
   ggplot2::ggsave("wdc_stints_600dpi.png", plot = p, width = W, height = H, dpi = 600)
 }
+
 
 

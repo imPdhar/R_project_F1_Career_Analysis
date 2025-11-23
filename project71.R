@@ -841,25 +841,23 @@ reg_eras$start[1] <- min_year
 reg_eras$end[nrow(reg_eras)] <- max_year
 
 ggplot() +
-  # Regulation backgrounds
+  #Regulation backgrounds
   geom_rect(
     data = reg_eras,
     aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = era),
     alpha = 0.5  # richer opacity
   ) +
-  # Ferrari performance
   geom_line(data = ferrari_season, aes(x = year, y = points_per_race),
             color = "black", size = 0.8) +
   geom_point(data = ferrari_season, aes(x = year, y = points_per_race),
              color = "black", size = 2) +
-  # Forecast line & ribbon
+  #Forecast line & ribbon
   geom_line(data = ferrari_forecast_df,
             aes(x = year, y = points_per_race),
             color = "red", linetype = "dotdash", size = 1) +
   geom_ribbon(data = ferrari_forecast_df,
               aes(x = year, ymin = lower, ymax = upper),
               fill = "white", alpha = 0.5) +
-  # Scales, labels, theme
   scale_fill_manual(values = reg_eras$fill, name = "Regulation Era") +
   labs(
     title = "Ferrari Performance - Points per Race (by season)",
@@ -874,6 +872,126 @@ ggplot() +
     plot.title = element_text(face="bold")
   )
 
+#Identify Mercedes 
+mercedes_id <- constructors_0 %>%
+  filter(name == "mercedes") %>%
+  pull(constructorId)
+
+#Aggregate season-level performance (Mercedes)
+mercedes_season <- driver_season %>%
+  filter(constructorId %in% mercedes_id) %>%
+  rename(year = race_year) %>%
+  group_by(year) %>%
+  summarise(
+    total_scaled_points = sum(total_scaled_points, na.rm = TRUE),
+    wins              = sum(wins, na.rm = TRUE),
+    dnfs              = sum(dnfs, na.rm = TRUE),
+    races_entered     = sum(races_entered, na.rm = TRUE),
+    .groups           = "drop"
+  ) %>%
+  filter(year > 1990) %>%
+  arrange(year)
+
+#Add total races in season
+season_lengths <- races_0 %>%
+  group_by(year) %>%
+  summarise(races_in_season = n(), .groups = "drop")
+
+mercedes_season <- mercedes_season %>%
+  left_join(season_lengths, by = "year") %>%
+  mutate(points_per_race = total_scaled_points / races_in_season)
+
+#Build ARIMA model
+mercedes_ts <- ts(
+  mercedes_season$points_per_race,
+  start     = min(mercedes_season$year),
+  frequency = 1
+)
+
+mercedes_arima <- auto.arima(
+  mercedes_ts,
+  seasonal      = FALSE,
+  stepwise      = FALSE,
+  approximation = FALSE
+)
+
+summary(mercedes_arima)
+checkresiduals(mercedes_arima)
+
+#Forecast next 3 seasons 
+mercedes_forecast <- forecast(mercedes_arima, h = 3)
+print(mercedes_forecast)
+
+#Create forecast dataframe 
+mercedes_forecast_df <- data.frame(
+  year = max(mercedes_season$year) + seq_len(length(mercedes_forecast$mean)),
+  points_per_race = as.numeric(mercedes_forecast$mean),
+  lower = as.numeric(mercedes_forecast$lower[, 2]),  #95% lower
+  upper = as.numeric(mercedes_forecast$upper[, 2])   #95% upper
+)
+
+#Regulation eras 
+reg_eras <- data.frame(
+  era = c("Safety/Aero Reforms", "V10/V8 Era", "Hybrid Era", "Ground Effect Era"),
+  start = c(1994, 2000, 2014, 2022),
+  end   = c(2000, 2014, 2022, 2025),
+  fill  = c("#FFD580", "#F5A09D", "#A5C8E1", "#A7E3A3")
+)
+
+min_year <- min(mercedes_season$year)
+max_year <- max(mercedes_forecast_df$year)
+
+reg_eras$start[1] <- min_year
+reg_eras$end[nrow(reg_eras)] <- max_year
+
+#Plot Mercedes performance with forecast
+ggplot() +
+  #Regulation backgrounds
+  geom_rect(
+    data = reg_eras,
+    aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = era),
+    alpha = 0.5
+  ) +
+  # Historical Mercedes performance
+  geom_line(
+    data = mercedes_season,
+    aes(x = year, y = points_per_race),
+    color = "black",
+    size  = 0.8
+  ) +
+  geom_point(
+    data = mercedes_season,
+    aes(x = year, y = points_per_race),
+    color = "black",
+    size  = 2
+  ) +
+  #Forecast line & ribbon (95% interval)
+  geom_line(
+    data = mercedes_forecast_df,
+    aes(x = year, y = points_per_race),
+    color    = "blue",
+    linetype = "dotdash",
+    size     = 1
+  ) +
+  geom_ribbon(
+    data = mercedes_forecast_df,
+    aes(x = year, ymin = lower, ymax = upper),
+    fill  = "white",
+    alpha = 0.5
+  ) +
+  scale_fill_manual(values = reg_eras$fill, name = "Regulation Era") +
+  labs(
+    title    = "Mercedes Performance - Points per Race (by season)",
+    subtitle = "Shaded backgrounds indicate major regulation eras",
+    x        = "Year",
+    y        = "Points per Race"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position   = "right",
+    panel.grid.minor  = element_blank(),
+    plot.title        = element_text(face = "bold")
+  )
 #===============================================================================
 
 
@@ -1497,6 +1615,7 @@ if (requireNamespace("ragg", quietly = TRUE)) {
 } else {
   ggplot2::ggsave("wdc_stints_600dpi.png", plot = p, width = W, height = H, dpi = 600)
 }
+
 
 
 

@@ -1,4 +1,3 @@
-
 library(tidyverse)
 library(dplyr)
 library(readr)
@@ -612,240 +611,130 @@ ggplot(top_teams, aes(x = reorder(name, team_strength), y = team_strength)) +
   theme_minimal()
 
 #===============================================================================
+#===============================================================================
+#Constructor Names
+constructors_0 <- constructors_0 %>%
+  mutate(name = str_trim(tolower(name)))
 
-final_races_wdc <- races_0 %>%
+#Identify Ferrari 
+ferrari_id <- constructors_0 %>%
+  filter(name == "ferrari") %>%
+  pull(constructorId)
+
+#Aggregate Season-Level Performance
+ferrari_season <- driver_season %>%
+  filter(constructorId %in% ferrari_id) %>%
   group_by(year) %>%
-  summarise(final_race_id = raceId[which.max(round)], .groups = "drop")
-
-
-top3_wdc <- driver_standings_0 %>%
-  inner_join(final_races_wdc, by = c("raceId" = "final_race_id")) %>%
-  filter(year >= 1990 & year <= 2024,
-         position <= 3) %>%
-  left_join(
-    drivers_0 %>%
-      mutate(driver_name = paste(forename, surname)) %>%
-      select(driverId, driver_name, nationality),
-    by = "driverId"
-  ) %>%
-  select(year, position, driverId, driver_name, nationality, points, wins) %>%
-  arrange(desc(year), position)
-
-
-print(top3_wdc)
-
-
-driver_yearly_scaled <- results_scaled %>%
-  filter(year >= 1990, year <= 2024) %>%
-  group_by(driverId, driver_name, year) %>%
-  summarise(total_scaled_points = sum(scaled_points, na.rm = TRUE), .groups = "drop")
-
-top3_unique <- top3_wdc %>%
-  filter(position <= 3, year >= 1990, year <= 2024) %>%
-  filter(driver_name != "Lewis Hamilton") %>%
-  distinct(driverId, driver_name)
-
-retired_2024_names <- c(
-  "Daniel Ricciardo",
-  "Logan Sargeant",
-  "Valtteri Bottas",
-  "Zhou Guanyu",
-  "Kevin Magnussen"
-)
-
-# Map names (both orders) to driverIds present in drivers_0
-# so we can robustly match regardless of "forename surname" vs "surname forename"
-retired_2024_ids <- drivers_0 %>%
-  mutate(
-    driver_name = paste(forename, surname),
-    driver_name_rev = paste(surname, forename)
-  ) %>%
-  filter(driver_name %in% retired_2024_names | driver_name_rev %in% retired_2024_names) %>%
-  distinct(driverId) %>%
-  pull(driverId)
-
-# Last active year from results
-driver_last_year <- results_scaled %>%
-  distinct(driverId, driver_name, year) %>%
-  group_by(driverId, driver_name) %>%
-  summarise(last_active_year = max(year, na.rm = TRUE), .groups = "drop")
-
-# Build pool of retired drivers among the unique top-3 list (Hamilton excluded already)
-retired_driver_pool <- top3_unique %>%
-  left_join(driver_last_year, by = c("driverId", "driver_name")) %>%
-  mutate(
-    retired_by_2024 = (last_active_year < 2024) |
-      (last_active_year == 2024 & (driverId %in% retired_2024_ids))
-  ) %>%
-  filter(retired_by_2024) %>%
-  select(driverId, driver_name)
-
-
-split_into_stints <- function(years_vec) {
-  yrs <- sort(unique(years_vec))
-  if (length(yrs) == 0) return(tibble(stint_id = integer(), year = integer()))
-  # new stint when gap > 1
-  stint_id <- cumsum(c(1, diff(yrs) > 1))
-  tibble(year = yrs, stint_id = stint_id)
-}
-
-driver_stints <- results_scaled %>%
-  filter(driverId %in% retired_driver_pool$driverId) %>%
-  distinct(driverId, driver_name, year) %>%
-  filter(year >= 1990, year <= 2024) %>%
-  arrange(driverId, year) %>%
-  group_by(driverId, driver_name) %>%
-  group_modify(~ split_into_stints(.x$year)) %>%
-  ungroup()
-
-print(driver_stints) #Seems to be working fine for drivers like Kimi who left in 2010
-
-
-driver_stints <- driver_stints %>%
-  group_by(driverId, driver_name, stint_id) %>%
   summarise(
-    start_year = min(year), end_year = max(year),
-    years = list(sort(year)),
+    total_points_norm = sum(total_points_norm, na.rm = TRUE),
+    wins = sum(wins, na.rm = TRUE),
+    races_entered = sum(races_entered, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  arrange(driver_name, start_year) %>%
-  group_by(driverId, driver_name) %>%
-  mutate(stint_num = row_number(),
-         stint_label = paste0(driver_name, "_", stint_num)) %>%
-  ungroup()
-
-#======================Superfluous? or Am i stupid? ====================================
-safe_auto_arima <- function(ts_series) {
-  # Safely fit ARIMA; return NULL if not enough data / errors
-  if (length(ts_series) < 2) return(NULL)
-  tryCatch(
-    {
-      auto.arima(ts_series, stepwise = FALSE, approximation = FALSE)
-    },
-    error = function(e) NULL
-  )
-}
-
-stint_models <- driver_stints %>%
-  mutate(
-    data = pmap(list(driverId, years),
-                function(did, yrs) {
-                  # pull yearly scaled points for this driver and these active years
-                  df <- driver_yearly_scaled %>%
-                    filter(driverId == did, year %in% unlist(yrs)) %>%
-                    arrange(year)
-                  # ensure we include years with 0 total_scaled_points (if they raced but scored 0)
-                  # build a complete frame over the stint's active years
-                  yr_complete <- tibble(year = unlist(yrs))
-                  df <- yr_complete %>%
-                    left_join(df, by = "year") %>%
-                    mutate(
-                      driverId = ifelse(is.na(driverId), did, driverId),
-                      driver_name = driver_stints$driver_name[match(did, driver_stints$driverId)][1],
-                      total_scaled_points = replace_na(total_scaled_points, 0)
-                    ) %>%
-                    arrange(year)
-                  df
-                }),
-    ts = map(data, ~ {
-      if (nrow(.x) < 2) return(NULL)
-      ts(.x$total_scaled_points, start = min(.x$year), end = max(.x$year), frequency = 1)
-    }),
-    fit = map(ts, safe_auto_arima),
-    fitted_vals = map2(fit, data, ~ {
-      if (is.null(.x)) return(rep(NA_real_, nrow(.y)))
-      fv <- as.numeric(fitted(.x))
-      # align length (sometimes fitted is shorter for ARIMA with differencing)
-      if (length(fv) < nrow(.y)) {
-        c(rep(NA_real_, nrow(.y) - length(fv)), fv)
-      } else fv
-    })
-  )
-
-
-invisible(
-  pwalk(
-    list(stint_models$data,
-         stint_models$fitted_vals,
-         driver_stints$stint_label,
-         driver_stints$start_year,
-         driver_stints$end_year),
-    function(df, fv, lbl, y0, y1) {
-      if (nrow(df) < 2) {
-        message(lbl, " (", y0, "-", y1, "): <2 points, skipping ARIMA plot.")
-        return(invisible(NULL))
-      }
-      p <- ggplot(df, aes(x = year, y = total_scaled_points)) +
-        geom_line(linewidth = 0.9) +
-        geom_point(size = 2) +
-        geom_line(aes(y = fv), linetype = "dashed") +
-        labs(
-          title = paste0("ARIMA (in-sample) — ", lbl, " [", y0, "–", y1, "]"),
-          x = "Year", y = "Scaled points (per season)",
-          subtitle = "Solid: actual | Dashed: ARIMA fitted (no forecast)"
-        ) +
-        theme_minimal()
-      print(p)
-    }
-  )
-)
-
-agg_yearly <- driver_yearly_scaled %>%
-  filter(driverId %in% retired_driver_pool$driverId) %>%
-  group_by(year) %>%
-  summarise(mean_scaled_points = mean(total_scaled_points, na.rm = TRUE), .groups = "drop") %>%
+  filter(year > 1990) %>%
   arrange(year)
 
-if (nrow(agg_yearly) >= 2) {
-  agg_ts <- ts(agg_yearly$mean_scaled_points,
-               start = min(agg_yearly$year),
-               end   = max(agg_yearly$year),
-               frequency = 1)
-  agg_fit <- safe_auto_arima(agg_ts)
-  agg_fitted <- if (!is.null(agg_fit)) {
-    fv <- as.numeric(fitted(agg_fit))
-    if (length(fv) < nrow(agg_yearly)) {
-      c(rep(NA_real_, nrow(agg_yearly) - length(fv)), fv)
-    } else fv
-  } else rep(NA_real_, nrow(agg_yearly))
-  
-  p_agg <- ggplot(agg_yearly, aes(x = year, y = mean_scaled_points)) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 2) +
-    geom_line(aes(y = agg_fitted), linetype = "dashed") +
-    labs(
-      title = "Aggregate ARIMA — Retired Top-3 Drivers (1990–2024, excl. Hamilton)",
-      x = "Year", y = "Mean scaled points (per driver per season)",
-      subtitle = "Solid: actual mean | Dashed: ARIMA fitted (no forecast)"
-    ) +
-    theme_minimal()
-  print(p_agg)
-} else {
-  message("Aggregate series has <2 points; skipping aggregate ARIMA.")
-}
-#====================================================================================
+ferrari_season <- driver_season %>%
+  filter(constructorId %in% ferrari_id) %>%
+  group_by(year) %>%
+  summarise(
+    total_points_norm = sum(total_points_norm, na.rm = TRUE),
+    wins = sum(wins, na.rm = TRUE),
+    dnfs = sum(dnfs, na.rm = TRUE),
+    races_entered = sum(races_entered, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(dnf_rate = dnfs / races_entered) %>%
+  filter(year > 1990) %>%
+  arrange(year)
+
+#Add Total Races
+season_lengths <- races_0 %>%
+  group_by(year) %>%
+  summarise(races_in_season = n(), .groups = "drop")
+
+ferrari_season <- ferrari_season %>%
+  left_join(season_lengths, by = "year") %>%
+  mutate(points_per_race = total_points_norm / races_in_season)
+
+#Build ARIMA Model on Points per Race
+ferrari_ts <- ts(ferrari_season$points_per_race, start = min(ferrari_season$year))
+ferrari_arima <- auto.arima(ferrari_ts)
+
+checkresiduals(ferrari_arima)
+
+#Forecast Next Season
+ferrari_forecast <- forecast(ferrari_arima, h = 1)
+print(ferrari_forecast)
+
+#Visualisation of line plot
+#Define regulation eras 
+reg_eras <- data.frame(
+  era = c("Safety/Aero Reforms", "V10/V8 Era", "Hybrid Era", "Ground Effect Era"),
+  start = c(1994, 2000, 2014, 2022),
+  end   = c(1999, 2013, 2021, 2025),
+  fill  = c("#FFD580", "#F5A09D", "#A5C8E1", "#A7E3A3")  # richer tones
+)
+
+min_year <- min(ferrari_season$year)
+max_year <- max(ferrari_forecast_df$year)
+
+reg_eras$start[1] <- min_year
+reg_eras$end[nrow(reg_eras)] <- max_year
+
+ggplot() +
+  # Regulation backgrounds
+  geom_rect(
+    data = reg_eras,
+    aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = era),
+    alpha = 0.5  # richer opacity
+  ) +
+  # Ferrari performance
+  geom_line(data = ferrari_season, aes(x = year, y = points_per_race),
+            color = "firebrick", size = 1.2) +
+  geom_point(data = ferrari_season, aes(x = year, y = points_per_race),
+             color = "firebrick", size = 2) +
+  # Forecast line & ribbon
+  geom_line(data = ferrari_forecast_df,
+            aes(x = year, y = points_per_race),
+            color = "darkred", linetype = "dotdash", size = 1) +
+  geom_ribbon(data = ferrari_forecast_df,
+              aes(x = year, ymin = lower, ymax = upper),
+              fill = "firebrick", alpha = 0.25) +
+  # Scales, labels, theme
+  scale_fill_manual(values = reg_eras$fill, name = "Regulation Era") +
+  labs(
+    title = "Ferrari Performance — Points per Race by Season",
+    subtitle = "Shaded backgrounds indicate major regulation eras",
+    x = "Year",
+    y = "Points per Race"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
 
 
-# ── helper
+# ── helpers
 split_into_stints <- function(years_vec) {
   yrs <- sort(unique(years_vec))
   if (length(yrs) == 0) return(tibble(year = integer(), stint_id = integer()))
   tibble(year = yrs, stint_id = cumsum(c(1, diff(yrs) > 1)))
 }
-
 safe_auto_arima <- function(x) {
   if (length(x) < 2) return(NULL)
-  tryCatch(auto.arima(x, stepwise = TRUE, approximation = FALSE),
-           error = function(e) NULL)
+  tryCatch(auto.arima(x, stepwise = TRUE, approximation = FALSE), error = function(e) NULL)
 }
 
-# ── 1) yearly scaled points per driver (active years only, 1990–2024) ─────────
+# ── 1) yearly scaled points per driver (active years only, 1990–2024)
 driver_yearly_scaled <- results_scaled %>%
   filter(year >= 1990, year <= 2024) %>%
   group_by(driverId, driver_name, year) %>%
   summarise(total_scaled_points = sum(scaled_points, na.rm = TRUE), .groups = "drop")
 
-# ── 2) robust WDC list from final race standings (coerce position -> integer) ─
+# ── 2) robust WDC list from final race standings
 final_races <- races_0 %>%
   group_by(year) %>%
   summarise(final_race_id = raceId[which.max(round)], .groups = "drop")
@@ -856,15 +745,14 @@ wdc_by_year <- driver_standings_0 %>%
   filter(position == 1) %>%
   left_join(final_races, by = c("raceId" = "final_race_id")) %>%  # bring year in
   left_join(
-    drivers_0 %>% mutate(driver_name = paste(forename, surname)) %>%
-      select(driverId, driver_name),
+    drivers_0 %>% mutate(driver_name = paste(forename, surname)) %>% select(driverId, driver_name),
     by = "driverId"
   ) %>%
   select(year, driverId, driver_name)
 
 wdc_unique <- wdc_by_year %>% distinct(driverId, driver_name)
 
-# ── 3) keep only WDCs retired BEFORE 2024; exclude Hamilton ───────────────────
+# ── 3) retired WDCs (<2024), exclude Hamilton + (later) Prost & Piquet (because their stints are too small and it looks weird)
 driver_last_year <- results_scaled %>%
   distinct(driverId, driver_name, year) %>%
   group_by(driverId, driver_name) %>%
@@ -872,21 +760,28 @@ driver_last_year <- results_scaled %>%
 
 wdc_retired <- wdc_unique %>%
   left_join(driver_last_year, by = c("driverId","driver_name")) %>%
-  filter(!is.na(last_active_year), last_active_year < 2024) %>%
-  # must have at least one season in 1990–2024 window
-  semi_join(driver_yearly_scaled %>% distinct(driverId), by = "driverId") %>%
+  filter(!is.na(last_active_year), last_active_year < 2024) %>%       # STRICTLY retired before 2024
+  semi_join(driver_yearly_scaled %>% distinct(driverId), by = "driverId") %>%  # has data in window
   filter(driver_name != "Lewis Hamilton")
 
-# sanity checks: no active champs & no non-WDCs
+# sanity checks
 stopifnot(!any(wdc_retired$driver_name %in% c("Max Verstappen","Fernando Alonso")))
 stopifnot(all(wdc_retired$driverId %in% wdc_unique$driverId))
 
-message("Retired WDCs (excl. Hamilton): ",
-        paste(sort(wdc_retired$driver_name), collapse = ", "))
+# ── 4) label names as "F. Surname"; exclude Prost & Piquet outright
+name_map <- drivers_0 %>%
+  mutate(driver_name = paste(forename, surname),
+         label_name  = paste0(substr(forename, 1, 1), ". ", surname)) %>%
+  select(driverId, driver_name, label_name)
 
-# ── 4) split each retired WDC's active years into stints (consecutive years) ──
+# exclude_drivers <- c("Alain Prost", "Nelson Piquet")
+wdc_retired_lbl <- wdc_retired %>%
+  filter(!driver_name %in% exclude_drivers) %>%
+  left_join(name_map, by = c("driverId","driver_name"))
+
+# ── 5) split active years into stints and remove stints with <= 2 seasons
 driver_stints <- results_scaled %>%
-  filter(driverId %in% wdc_retired$driverId, year >= 1990, year <= 2024) %>%
+  filter(driverId %in% wdc_retired_lbl$driverId, year >= 1990, year <= 2024) %>%
   distinct(driverId, driver_name, year) %>%
   arrange(driverId, year) %>%
   group_by(driverId, driver_name) %>%
@@ -896,133 +791,112 @@ driver_stints <- results_scaled %>%
   summarise(
     start_year = min(year), end_year = max(year),
     years = list(sort(year)),
+    n_years = dplyr::n(),
     .groups = "drop"
   ) %>%
+  filter(n_years > 2) %>%          # <-- dropping short stints
   arrange(driver_name, start_year) %>%
   group_by(driverId, driver_name) %>%
-  mutate(stint_num = row_number(),
-         stint_label = paste0(driver_name, "_", stint_num)) %>%
-  ungroup()
+  mutate(stint_num = row_number()) %>%
+  ungroup() %>%
+  left_join(name_map, by = c("driverId","driver_name")) %>%
+  mutate(stint_label = paste0(label_name, " — stint ", stint_num, " (", start_year, "–", end_year, ")"))
 
-# Guard: only WDCs present
-stopifnot(all(driver_stints$driverId %in% wdc_retired$driverId))
+driver_stints <- driver_stints %>%
+  left_join(driver_last_year, by = c("driverId","driver_name")) %>%
+  filter(end_year == last_active_year) %>%
+  select(-last_active_year)
 
-message("Total stints to model: ", nrow(driver_stints))
+stopifnot(nrow(driver_stints) > 0)
 
-# ── 5) per-stint series (active years), ARIMA fit (in-sample only) ────────────
-stint_models <- driver_stints %>%
-  mutate(
-    data = pmap(list(driverId, years),
-                function(did, yrs) {
-                  yrs <- sort(unlist(yrs))
-                  base <- tibble(year = yrs)
-                  pts  <- driver_yearly_scaled %>%
-                    filter(driverId == did, year %in% yrs) %>%
-                    select(year, total_scaled_points)
-                  base %>%
-                    left_join(pts, by = "year") %>%
-                    mutate(total_scaled_points = tidyr::replace_na(total_scaled_points, 0)) %>%
-                    arrange(year)
-                }),
-    ts = map(data, ~ if (nrow(.x) >= 2)
-      ts(.x$total_scaled_points, start = min(.x$year), end = max(.x$year), frequency = 1) else NULL),
-    fit = map(ts, safe_auto_arima),
-    fitted_vals = map2(fit, data, ~ {
-      if (is.null(.x)) return(rep(NA_real_, nrow(.y)))
-      fv <- as.numeric(fitted(.x))
-      if (length(fv) < nrow(.y)) c(rep(NA_real_, nrow(.y) - length(fv)), fv) else fv
-    })
-  )
 
-# ── 6) clearer small-multiples: bigger text, 4 columns, uncluttered axes ──────
-plot_df <- stint_models %>%
-  select(driver_name, stint_label, start_year, end_year, data, fitted_vals) %>%
-  mutate(
-    actual = purrr::map(data, ~ dplyr::transmute(.x, year, value = total_scaled_points, series = "Actual")),
-    fitted = purrr::map2(data, fitted_vals, ~ dplyr::transmute(.x, year, value = .y, series = "ARIMA fitted"))
-  ) %>%
-  mutate(df = purrr::map2(actual, fitted, ~ dplyr::bind_rows(.x, .y))) %>%
-  select(-data, -fitted_vals, -actual, -fitted) %>%
-  tidyr::unnest(df) %>%
-  dplyr::filter(series != "ARIMA fitted" | !is.na(value))
+# Simple line plot for Scaled points per season vs Year for retired WDCs
+wdc_retired_yearly <- driver_yearly_scaled %>%
+  filter(driverId %in% wdc_retired_lbl$driverId) %>%
+  left_join(name_map, by = c("driverId", "driver_name")) %>%
+  arrange(label_name, year)
 
-# facet labels like "Michael Schumacher — stint 2 (2010–2012)"
-stint_labs <- driver_stints %>%
-  dplyr::transmute(
-    stint_label,
-    n_years  = purrr::map_int(years, length),
-    is_short = n_years <= 3L,
-    facet_lab = paste0(driver_name, " — stint ", stint_num, " (", start_year, "–", end_year, ")")
-  )
-
-plot_df <- plot_df %>%
-  dplyr::left_join(stint_labs, by = "stint_label")
-
-# helpers to pick endpoints for short stints
-short_endpoints <- plot_df %>%
-  dplyr::filter(is_short, series == "Actual") %>%
-  dplyr::group_by(stint_label) %>%
-  dplyr::filter(year %in% range(year)) %>%
-  dplyr::ungroup()
-
-# ── plot: thicker for short stints, hide ARIMA on short ones, free x & y ──────
-p <- ggplot() +
-  # long stints: actual
-  geom_line(data = dplyr::filter(plot_df, !is_short, series == "Actual"),
-            aes(year, value), linewidth = 1) +
-  geom_point(data = dplyr::filter(plot_df, !is_short, series == "Actual"),
-             aes(year, value), size = 2) +
-  # long stints: ARIMA fitted (dashed)
-  geom_line(data = dplyr::filter(plot_df, !is_short, series == "ARIMA fitted"),
-            aes(year, value), linetype = "dashed") +
-  
-  # short stints: actual (thicker / bigger)
-  geom_line(data = dplyr::filter(plot_df, is_short, series == "Actual"),
-            aes(year, value), linewidth = 1.4) +
-  geom_point(data = dplyr::filter(plot_df, is_short, series == "Actual"),
-             aes(year, value), size = 2.8) +
-  # short stints: label endpoints with the year
-  geom_text(data = short_endpoints,
-            aes(year, value, label = year),
-            vjust = -0.6, size = 3) +
-  
-  facet_wrap(~ facet_lab, scales = "free", ncol = 3) +
+p <- ggplot(wdc_retired_yearly, aes(x = year, y = total_scaled_points, group = label_name)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ label_name, scales = "free", ncol = 3) +
   scale_x_continuous(breaks = scales::pretty_breaks(4)) +
   labs(
     title = "Career Trajectories — Retired World Champions (1990–2024, excl. Hamilton)",
-    subtitle = "Solid = actual scaled points per season; Dashed = ARIMA in-sample fit (no forecast)\nShort stints are emphasized and omit ARIMA fit",
+    subtitle = "Yearly scaled points",
     x = "Year", y = "Scaled points (per season)"
   ) +
   theme_minimal(base_size = 16) +
-  theme(
-    strip.text = element_text(face = "bold"),
-    panel.grid.minor = element_blank()
-  )
+  theme(strip.text = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
 
 print(p)
 
-# ── 7) Export at max clarity ──────────────────────────────────────────────────
-# Choose reasonable canvas size based on number of facets
-n_facets <- dplyr::n_distinct(plot_df$facet_lab)
-ncol <- 3
-nrow <- ceiling(n_facets / ncol)
-# inches: ~4in per col, ~3.5in per row (tweak as you like)
-W <- 4 * ncol
-H <- 3.5 * nrow
+n_facets <- dplyr::n_distinct(driver_stints$stint_label)
+ncol <- 3; nrow <- ceiling(n_facets / ncol)
+W <- 4 * ncol; H <- 3.6 * nrow
 
-# (A) Vector PDF (crisp at any zoom)
-ggplot2::ggsave("wdc_stints.pdf", plot = p, width = W, height = H, device = cairo_pdf)
+ggplot2::ggsave("wdc_stints_forecast_filtered.pdf", plot = p, width = W, height = H, device = cairo_pdf)
 
-# (B) Vector SVG (great for web/Illustrator) — requires svglite
-if (requireNamespace("svglite", quietly = TRUE)) {
-  svglite::svglite("wdc_stints.svg", width = W, height = H); print(p); dev.off()
+#===================Arima similar to lewis=============
+wdc_roster <- wdc_retired_lbl %>%
+  distinct(driverId, driver_name, label_name) %>%
+  arrange(label_name)
+
+wdc_roster <- wdc_roster %>% bind_rows(drivers_0 %>% mutate(driver_name=paste(forename,surname), label_name=paste0(substr(forename,1,1),". ",surname)) %>% filter(driver_name=="Valtteri Bottas") %>% select(driverId,driver_name,label_name)) %>% distinct(driverId,.keep_all=TRUE) %>% arrange(label_name)
+
+
+h <- 3
+
+#pdf("retired_wdcs_all_drivers.pdf", width = 12, height = 9)
+for (i in seq_len(nrow(wdc_roster))) {
+  did <- wdc_roster$driverId[i]
+  print(did)
+  lbl <- wdc_roster$label_name[i]
+  print(lbl)
+  
+  drv_season <- driver_yearly_scaled %>%
+    dplyr::filter(driverId == did) %>%
+    dplyr::arrange(year)
+  
+  if (nrow(drv_season) < 2) {
+    message(lbl, ": fewer than 2 seasons available — skipping ARIMA.")
+    next
+  }
+  
+  start_year <- min(drv_season$year, na.rm = TRUE)
+  end_year   <- max(drv_season$year, na.rm = TRUE)
+  
+  # time series of scaled points per season (frequency = 1 year)
+  drv_ts <- ts(drv_season$total_scaled_points, start = start_year, frequency = 1)
+  
+  # Plot the raw TS
+  print(
+    autoplot(drv_ts) +
+      ggtitle(paste0(lbl, " — Scaled Points per Season")) +
+      xlab("Year") + ylab("Scaled points per season") +
+      theme_minimal()
+  )
+  
+  # Optional: summary of the TS
+  print(summary(drv_ts))
+  
+  # Fit ARIMA and forecast h = 3 seasons
+  drv_arima <- auto.arima(drv_ts, seasonal = FALSE, stepwise = FALSE, approximation = FALSE)
+  print(summary(drv_arima))
+  checkresiduals(drv_arima)
+  
+  drv_fc <- forecast(drv_arima, h = h, level = c(80, 95))
+  
+  # Forecast plot
+  print(
+    autoplot(drv_fc) +
+      labs(
+        title = paste0(lbl, " — ARIMA Forecast (Scaled Points per Season)"),
+        x = "Year", y = "Scaled points per season"
+      ) +
+      theme_minimal()
+  )
 }
-
-# (C) High-DPI PNG (publication raster) — use ragg if available
-if (requireNamespace("ragg", quietly = TRUE)) {
-  ragg::agg_png("wdc_stints_600dpi.png", width = round(W*300), height = round(H*300), res = 600)
-  print(p); dev.off()
-} else {
-  ggplot2::ggsave("wdc_stints_600dpi.png", plot = p, width = W, height = H, dpi = 600)
-}
+dev.off()
 
